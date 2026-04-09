@@ -1,0 +1,10 @@
+System Environment and Implementation
+The Trust-Aware Switchboard was implemented in Go (v1.25+) to leverage its high-performance concurrency primitives and efficient memory management. The prototype was deployed on a workstation with an Intel i5 processor and 8GB of memory, running Windows 11.
+The implementation utilizes the Prometheus client library (client_golang) to expose internal state variables as time-series data. This allows for real-time observation of trust fluctuations and system performance without significant instrumentation overhead.
+MIL Configuration
+The core logic of the switchboard is governed by the parameters defined in Table 2. These values were selected to prioritize system stability while ensuring rapid response to anomalous behavior.
+Parameter	Symbol	Value	Description
+Growth Factor:	  α_{growth}	0.1	used for Smoothing factor for benign updates
+Decay Factor:	    α_{decay}	  0.4	used for Smoothing factor for malicious updates
+Probation Window:	K	          5   used for steps	Temporal lock-out after a trust violation
+Base Threshold:	  τ_{base}	  0.3	used for Minimum floor for the adaptive threshold
