@@ -35,5 +35,6 @@ git clone [https://github.com/your-username/MIL-Switchboard.git](https://github.
 cd MIL-Switchboard
 go mod init mil-switchboard
 go get [github.com/prometheus/client_golang/prometheus](https://github.com/prometheus/client_golang/prometheus)
-
+```
+### Run the Project
 go run src/main.go
