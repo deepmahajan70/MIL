@@ -1,0 +1,21 @@
+How Interoperability is Achieved ? Here is workflow:
+Step 1: Source (MQTT) Packet Arrives
+
+Step 2: MQTT Adapter Strips Protocol Wrapper and creates UMO
+  
+Step 3: Normalization Pipeline Processing
+	
+3a. Syntactic Normalization	3b. Semantic Tagging (IEEE 2888.1-2024)
+
+Updated UMO:
+
+Step 4: Switchboard Routing Decision
+
+Step 5: Target CoAP Adapter Translation
+The CoAP Lightweight Adapter reconstructs a protocol-specific message:
+
+Output Packet
+
+Step 6: Transmission to CoAP Device
+Gateway → CoAP Actuator (UDP)
+Destination: coap://192.168.1.50:5683/actuator/1/set_threshold
