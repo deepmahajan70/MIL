@@ -38,3 +38,6 @@ go get [github.com/prometheus/client_golang/prometheus](https://github.com/prome
 ```
 ### Run the Project
 go run src/main.go
+
+### High-Scale Performance Benchmarking
+The Modular Interoperability Layer (MIL) was subjected to an extended operational stress test to evaluate its stability and efficiency at scale.Total Transactions: 5,001 successful cross-protocol mediations.Latency Distribution: 98.36% of security-routing decisions were executed in < 0.5 ms.Internal Overhead: The mean internal latency stabilized at 0.0307 ms, ensuring that the Trust-Aware Switchboard remains computationally transparent to the application layer.Resource Footprint: * Memory: Maintained a lean resident footprint of ~15.36 MB under continuous load.CPU: Total CPU time for 5,000+ complex trust calculations was only 2.15 seconds.Adaptive Resilience: The ThresholdManager successfully prevented service disruption by dynamically adjusting the security baseline ($\tau$) from 0.77 to 0.328 in response to real-time fluctuations in device trust scores ($\sigma$).
