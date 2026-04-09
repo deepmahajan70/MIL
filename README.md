@@ -28,8 +28,6 @@ If $\sigma \ge \tau$, the packet is routed through a **Lightweight Adapter**. If
 - Go 1.25 or higher
 - Prometheus (optional, for telemetry visualization)
 
-### To Run ###
-go run src/main.go
 
 ### Installation
 ```bash
@@ -37,3 +35,5 @@ git clone [https://github.com/your-username/MIL-Switchboard.git](https://github.
 cd MIL-Switchboard
 go mod init mil-switchboard
 go get [github.com/prometheus/client_golang/prometheus](https://github.com/prometheus/client_golang/prometheus)
+
+go run src/main.go
