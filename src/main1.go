@@ -12,7 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
+//this is combined version
 //////////////////////////////////////////////////////////////////
 // 1. PROMETHEUS METRICS
 //////////////////////////////////////////////////////////////////
