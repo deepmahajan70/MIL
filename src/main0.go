@@ -1,0 +1,511 @@
+package main
+
+import (
+	"fmt"
+	"math"
+	"math/rand"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+//////////////////////////////////////////////////////////////////
+// 1. PROMETHEUS METRICS
+//////////////////////////////////////////////////////////////////
+
+var (
+	// Total processed messages
+	opsProcessed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "mil_processed_messages_total",
+		Help: "Total number of processed IoT messages",
+	})
+
+	// Inference latency by model type
+	inferenceLatency = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "mil_inference_latency_ms",
+			Help:    "Inference latency by adapter/model type",
+			Buckets: []float64{1, 2, 5, 10, 15, 20, 30},
+		},
+		[]string{"model_type"},
+	)
+
+	// Routing latency
+	routingLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "mil_routing_latency_ms",
+			Help:    "Latency of trust-aware routing decisions",
+			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10},
+		},
+	)
+
+	// Trust score per device
+	trustGauge = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "mil_device_trust_score",
+			Help: "Current trust score per device",
+		},
+		[]string{"device_id"},
+	)
+
+	// Adaptive threshold
+	thresholdGauge = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "mil_dynamic_threshold",
+			Help: "Current adaptive trust threshold",
+		},
+	)
+
+	// Current model usage
+	modelUsage = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mil_model_selection_total",
+			Help: "Number of times each model path was selected",
+		},
+		[]string{"model_type"},
+	)
+)
+
+//////////////////////////////////////////////////////////////////
+// 2. MODEL / INFERENCE ENGINE
+//////////////////////////////////////////////////////////////////
+
+type ModelType string
+
+const (
+	TFLiteINT8 ModelType = "TFLite_INT8_Quantized"
+	FP32Heavy  ModelType = "Standard_FP32"
+)
+
+type InferenceEngine struct {
+	mType ModelType
+}
+
+// Predict simulates:
+// - Quantized lightweight inference
+// - Heavy accurate inference
+func (ie *InferenceEngine) Predict(input float64) float64 {
+
+	start := time.Now()
+
+	var result float64
+
+	switch ie.mType {
+
+	case TFLiteINT8:
+
+		// Simulated quantization noise
+		result = math.Round(input*255) / 255
+
+		// Fast edge inference
+		time.Sleep(2 * time.Millisecond)
+
+	case FP32Heavy:
+
+		// Full precision
+		result = input
+
+		// Heavy accurate inference
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	inferenceLatency.
+		WithLabelValues(string(ie.mType)).
+		Observe(time.Since(start).Seconds() * 1000)
+
+	return result
+}
+
+//////////////////////////////////////////////////////////////////
+// 3. MESSAGE STRUCTURE
+//////////////////////////////////////////////////////////////////
+
+type UMO struct {
+	SourceID      string
+	Payload       float64
+	BehaviorScore float64
+}
+
+//////////////////////////////////////////////////////////////////
+// 4. TRUST ENGINE
+//////////////////////////////////////////////////////////////////
+
+type TrustEngine struct {
+	mu            sync.RWMutex
+	scores        map[string]float64
+	lastMalicious map[string]int
+	currentStep   int
+}
+
+// UpdateTrust implements:
+// - Asymmetric EWMA
+// - Stability hysteresis
+// - Temporal malicious cooldown
+func (te *TrustEngine) UpdateTrust(
+	id string,
+	behaviorScore float64,
+) float64 {
+
+	te.mu.Lock()
+	defer te.mu.Unlock()
+
+	current, exists := te.scores[id]
+
+	if !exists {
+		current = 1.0
+	}
+
+	//////////////////////////////////////////////////////////////
+	// Adaptive asymmetric learning rate
+	//////////////////////////////////////////////////////////////
+
+	alpha := 0.1
+
+	// Faster trust degradation
+	if behaviorScore < current {
+		alpha = 0.4
+	}
+
+	updated := (alpha * behaviorScore) +
+		((1 - alpha) * current)
+
+	//////////////////////////////////////////////////////////////
+	// Stability hysteresis
+	//////////////////////////////////////////////////////////////
+
+	if current > 0.7 && behaviorScore > 0.5 {
+
+		updated = (0.8 * current) +
+			(0.2 * behaviorScore)
+	}
+
+	//////////////////////////////////////////////////////////////
+	// Temporal malicious cooldown
+	//////////////////////////////////////////////////////////////
+
+	if te.currentStep-te.lastMalicious[id] < 5 {
+		updated = math.Min(updated, 0.45)
+	}
+
+	//////////////////////////////////////////////////////////////
+	// Mark malicious activity
+	//////////////////////////////////////////////////////////////
+
+	if behaviorScore < 0.3 {
+		te.lastMalicious[id] = te.currentStep
+	}
+
+	//////////////////////////////////////////////////////////////
+	// Clamp
+	//////////////////////////////////////////////////////////////
+
+	finalScore := math.Max(
+		0.0,
+		math.Min(1.0, updated),
+	)
+
+	te.scores[id] = finalScore
+
+	trustGauge.
+		WithLabelValues(id).
+		Set(finalScore)
+
+	return finalScore
+}
+
+//////////////////////////////////////////////////////////////////
+// 5. DYNAMIC THRESHOLD MANAGER
+//////////////////////////////////////////////////////////////////
+
+type ThresholdManager struct {
+	mu   sync.Mutex
+	prev float64
+}
+
+// Compute threshold based on:
+// - Mean trust
+// - Variance
+// - Exponential smoothing
+func (tm *ThresholdManager) Compute(
+	scores map[string]float64,
+) float64 {
+
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if len(scores) == 0 {
+		return 0.5
+	}
+
+	var sum float64
+	var sumSq float64
+
+	n := float64(len(scores))
+
+	for _, v := range scores {
+
+		sum += v
+		sumSq += v * v
+	}
+
+	mean := sum / n
+
+	variance := (sumSq / n) -
+		(mean * mean)
+
+	//////////////////////////////////////////////////////////////
+	// Adaptive threshold policy
+	//////////////////////////////////////////////////////////////
+
+	target := mean - 0.1 +
+		(0.2 * variance)
+
+	//////////////////////////////////////////////////////////////
+	// EWMA smoothing
+	//////////////////////////////////////////////////////////////
+
+	tm.prev = (0.3 * target) +
+		(0.7 * tm.prev)
+
+	//////////////////////////////////////////////////////////////
+	// Clamp
+	//////////////////////////////////////////////////////////////
+
+	final := math.Max(
+		0.3,
+		math.Min(0.95, tm.prev),
+	)
+
+	thresholdGauge.Set(final)
+
+	return final
+}
+
+//////////////////////////////////////////////////////////////////
+// 6. SWITCHBOARD
+//////////////////////////////////////////////////////////////////
+
+type Switchboard struct {
+	Engine     *TrustEngine
+	Threshold  *ThresholdManager
+	FastModel  *InferenceEngine
+	HeavyModel *InferenceEngine
+}
+
+// Route performs:
+// - Trust evaluation
+// - Dynamic thresholding
+// - Adaptive model routing
+func (sb *Switchboard) Route(p UMO) {
+
+	start := time.Now()
+
+	//////////////////////////////////////////////////////////////
+	// Update trust
+	//////////////////////////////////////////////////////////////
+
+	sigma := sb.Engine.UpdateTrust(
+		p.SourceID,
+		p.BehaviorScore,
+	)
+
+	//////////////////////////////////////////////////////////////
+	// Compute adaptive threshold
+	//////////////////////////////////////////////////////////////
+
+	tau := sb.Threshold.Compute(
+		sb.Engine.scores,
+	)
+
+	//////////////////////////////////////////////////////////////
+	// Routing Decision
+	//////////////////////////////////////////////////////////////
+
+	var prediction float64
+
+	if sigma >= tau {
+
+		//////////////////////////////////////////////////////////
+		// Trusted → Fast Quantized Adapter
+		//////////////////////////////////////////////////////////
+
+		prediction = sb.FastModel.
+			Predict(p.BehaviorScore)
+
+		modelUsage.
+			WithLabelValues(string(TFLiteINT8)).
+			Inc()
+
+		fmt.Printf(
+			"[⚡ FAST] %s | σ=%.2f τ=%.2f | %s | output=%.4f\n",
+			p.SourceID,
+			sigma,
+			tau,
+			TFLiteINT8,
+			prediction,
+		)
+
+	} else {
+
+		//////////////////////////////////////////////////////////
+		// Suspicious → Heavy Accurate Adapter
+		//////////////////////////////////////////////////////////
+
+		prediction = sb.HeavyModel.
+			Predict(p.BehaviorScore)
+
+		modelUsage.
+			WithLabelValues(string(FP32Heavy)).
+			Inc()
+
+		fmt.Printf(
+			"[🛡️ HEAVY] %s | σ=%.2f τ=%.2f | %s | output=%.4f\n",
+			p.SourceID,
+			sigma,
+			tau,
+			FP32Heavy,
+			prediction,
+		)
+	}
+
+	//////////////////////////////////////////////////////////////
+	// Metrics
+	//////////////////////////////////////////////////////////////
+
+	routingLatency.
+		Observe(time.Since(start).Seconds() * 1000)
+
+	opsProcessed.Inc()
+}
+
+//////////////////////////////////////////////////////////////////
+// 7. MAIN
+//////////////////////////////////////////////////////////////////
+
+func main() {
+
+	rand.Seed(time.Now().UnixNano())
+
+	//////////////////////////////////////////////////////////////
+	// Initialize Core Components
+	//////////////////////////////////////////////////////////////
+
+	engine := &TrustEngine{
+		scores:        make(map[string]float64),
+		lastMalicious: make(map[string]int),
+	}
+
+	thresholdManager := &ThresholdManager{
+		prev: 0.5,
+	}
+
+	switchboard := &Switchboard{
+		Engine:     engine,
+		Threshold:  thresholdManager,
+		FastModel:  &InferenceEngine{mType: TFLiteINT8},
+		HeavyModel: &InferenceEngine{mType: FP32Heavy},
+	}
+
+	//////////////////////////////////////////////////////////////
+	// Prometheus Metrics Server
+	//////////////////////////////////////////////////////////////
+
+	go func() {
+
+		http.Handle(
+			"/metrics",
+			promhttp.Handler(),
+		)
+
+		fmt.Println(
+			"📊 Prometheus telemetry active at http://localhost:2112/metrics",
+		)
+
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			fmt.Printf("Metrics server error: %v\n", err)
+		}
+	}()
+
+	fmt.Println(
+		"🚀 Adaptive MIL-Switchboard Active",
+	)
+
+	//////////////////////////////////////////////////////////////
+	// Multi-device simulation
+	//////////////////////////////////////////////////////////////
+
+	devices := []string{
+		"Edge_Node_01",
+		"Edge_Node_02",
+		"Industrial_Sensor_A",
+		"Industrial_Sensor_B",
+		"Drone_Unit_X",
+	}
+
+	//////////////////////////////////////////////////////////////
+	// Continuous simulation loop
+	//////////////////////////////////////////////////////////////
+
+	for step := 0; ; step++ {
+
+		engine.currentStep = step
+
+		for _, dev := range devices {
+
+			//////////////////////////////////////////////////////
+			// Normal behavior
+			//////////////////////////////////////////////////////
+
+			score := 0.8 + (rand.Float64() * 0.2)
+
+			//////////////////////////////////////////////////////
+			// Random anomaly injection
+			//////////////////////////////////////////////////////
+
+			if rand.Float64() < 0.12 {
+
+				score = 0.1 + (rand.Float64() * 0.2)
+
+				fmt.Printf(
+					"\n⚠️ ANOMALY DETECTED FROM %s\n",
+					dev,
+				)
+			}
+
+			//////////////////////////////////////////////////////
+			// Coordinated Attack Simulation (Steps 100-110)
+			//////////////////////////////////////////////////////
+
+			//if step >= 100 && step <= 110 {
+			//	//Force multiple devices to fail
+			//	if dev == "Industrial_Sensor_A" || dev == "Industrial_Sensor_B" || dev == "Drone_Unit_X" {
+			//		score = 0.05 // Extreme malicious behavior
+			//		fmt.Printf("\n🚨 COORDINATED ATTACK: %s reporting critical failure!\n", dev)
+			//	}
+			//} else {
+			//	//Normal random noise for steps outside the attack window
+			//	score = 0.8 + (rand.Float64() * 0.2)
+			//}
+
+			//////////////////////////////////////////////////////
+			// Route packet
+			//////////////////////////////////////////////////////
+
+			switchboard.Route(UMO{
+				SourceID:      dev,
+				BehaviorScore: score,
+				Payload:       rand.Float64(),
+			})
+		}
+
+		fmt.Println(
+			"------------------------------------------------",
+		)
+
+		time.Sleep(1 * time.Second)
+	}
+}
